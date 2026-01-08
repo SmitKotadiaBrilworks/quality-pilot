@@ -7,10 +7,10 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "start": "turbo run start",
-    "lint": "turbo run lint"
+    "dev": "npx turbo run dev",
+    "build": "npx turbo run build",
+    "start": "npx turbo run start",
+    "lint": "npx turbo run lint"
   },
   "devDependencies": {
     "turbo": "^1.10.16",

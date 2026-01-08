@@ -181,6 +181,19 @@ Frontend (Next.js) → Backend (Node.js) → AI (Gemini) → Playwright → Brow
   - Check: `sudo systemctl status redis`
 - **Install Docker Compose**: `sudo apt install docker-compose`
 
+### "Permission denied while trying to connect to Docker daemon"
+
+- **Fix Docker permissions**:
+  ```bash
+  sudo usermod -aG docker $USER
+  newgrp docker  # or log out and log back in
+  ```
+- **Or use the helper script**:
+  ```bash
+  sudo ./scripts/fix-docker-permissions.sh
+  ```
+- **Alternative**: Use system Redis instead of Docker
+
 ### "Gemini API error"
 
 - Verify API key is correct

@@ -2,8 +2,9 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
     "moduleResolution": "node",
+    "typeRoots": ["../../node_modules/@types", "./node_modules/@types"],
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,

@@ -1,14 +1,16 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { TestStep, TestAction } from '@quality-pilot/shared';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { TestAction } from "@quality-pilot/shared";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const genAI = new GoogleGenerativeAI(
+  process.env.GEMINI_API_KEY || "AIzaSyBHDd7XcBCDsg0jrWn2WWImbvgKe9Sg6vk"
+);
 
-interface StructuredStep {
+export interface StructuredStep {
   action: TestAction;
   target?: string;
   value?: string;
   assertion?: {
-    type: 'text' | 'element' | 'url' | 'title' | 'count';
+    type: "text" | "element" | "url" | "title" | "count";
     expected: string | number;
   };
   description: string;
@@ -20,10 +22,10 @@ interface StructuredStep {
  */
 export async function generateTestSteps(
   prompt: string,
-  url: string,
-  credentials?: Record<string, string>
+  url: string
+  // credentials?: Record<string, string>
 ): Promise<StructuredStep[]> {
-  const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
   // Build the prompt for Gemini
   const systemPrompt = `You are a test automation expert. Convert the user's natural language test description into structured test steps.
@@ -79,20 +81,23 @@ Example output:
 
     // Extract JSON from response (handle markdown code blocks)
     let jsonText = text.trim();
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    if (jsonText.startsWith("```")) {
+      jsonText = jsonText
+        .replace(/```json\n?/g, "")
+        .replace(/```\n?/g, "")
+        .trim();
     }
 
     const steps: StructuredStep[] = JSON.parse(jsonText);
 
     // Validate and return
     if (!Array.isArray(steps)) {
-      throw new Error('AI response is not an array');
+      throw new Error("AI response is not an array");
     }
 
     return steps;
   } catch (error: any) {
-    console.error('Error generating test steps:', error);
+    console.error("Error generating test steps:", error);
     throw new Error(`Failed to generate test steps: ${error.message}`);
   }
 }
@@ -113,7 +118,7 @@ export function injectCredentials(
     if (newStep.value) {
       Object.entries(credentials).forEach(([key, value]) => {
         newStep.value = newStep.value!.replace(
-          new RegExp(`\\{\\{${key}\\}\\}`, 'g'),
+          new RegExp(`\\{\\{${key}\\}\\}`, "g"),
           value
         );
       });

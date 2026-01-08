@@ -1,13 +1,22 @@
-import { chromium, firefox, webkit, Browser, Page, BrowserContext } from 'playwright';
-import { generateTestSteps, injectCredentials } from '../ai/geminiAgent.js';
-import { TestPrompt, TestStep, StepStatus, WSMessageType } from '@quality-pilot/shared';
-import Docker from 'dockerode';
+import {
+  chromium,
+  firefox,
+  webkit,
+  Browser,
+  Page,
+  BrowserContext,
+} from "playwright";
+import {
+  generateTestSteps,
+  injectCredentials,
+  StructuredStep,
+} from "../ai/geminiAgent.js";
+import { TestPrompt, TestStep, WSMessageType } from "@quality-pilot/shared";
 
-const docker = new Docker();
-
-interface ExecutionCallback {
-  (message: { type: WSMessageType; data: any }): void;
-}
+type ExecutionCallback = (message: {
+  type: WSMessageType;
+  data: unknown;
+}) => void;
 
 /**
  * Main test execution function
@@ -20,13 +29,12 @@ export async function executeTest(
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
   let page: Page | null = null;
-  let container: any = null;
 
   try {
     // Step 1: Generate test steps from AI
     callback({
-      type: 'log',
-      data: { message: '🤖 Generating test steps from AI...' },
+      type: "log",
+      data: { message: "🤖 Generating test steps from AI..." },
     });
 
     let steps = await generateTestSteps(
@@ -39,19 +47,23 @@ export async function executeTest(
     steps = injectCredentials(steps, testPrompt.credentials);
 
     callback({
-      type: 'log',
+      type: "log",
       data: {
         message: `✅ Generated ${steps.length} test steps`,
-        steps: steps.map((s, i) => ({ ...s, id: `step_${i}`, status: 'pending' })),
+        steps: steps.map((s, i) => ({
+          ...s,
+          id: `step_${i}`,
+          status: "pending",
+        })),
       },
     });
 
     // Step 2: Launch browser (in Docker container for isolation)
-    const browserType = testPrompt.options?.browser || 'chromium';
+    const browserType = testPrompt.options?.browser || "chromium";
     const headless = testPrompt.options?.headless !== false;
 
     callback({
-      type: 'log',
+      type: "log",
       data: { message: `🌐 Launching ${browserType} browser...` },
     });
 
@@ -59,7 +71,7 @@ export async function executeTest(
     const browserEngine = getBrowserEngine(browserType);
     browser = await browserEngine.launch({
       headless,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
     context = await browser.newContext({
@@ -72,8 +84,6 @@ export async function executeTest(
     page = await context.newPage();
 
     // Step 3: Execute each step
-    const executedSteps: TestStep[] = [];
-
     for (let i = 0; i < steps.length; i++) {
       const stepDef = steps[i];
       const stepId = `step_${i}`;
@@ -85,11 +95,11 @@ export async function executeTest(
         value: stepDef.value,
         assertion: stepDef.assertion,
         timestamp: Date.now(),
-        status: 'running',
+        status: "running",
       };
 
       callback({
-        type: 'step_started',
+        type: "step_started",
         data: { step: testStep },
       });
 
@@ -97,38 +107,38 @@ export async function executeTest(
         // Execute the step
         await executeStep(page, stepDef, testStep);
 
-        testStep.status = 'completed';
-        executedSteps.push(testStep);
+        testStep.status = "completed";
 
         // Take screenshot after step
-        const screenshot = await page.screenshot({ type: 'png' });
-        const screenshotBase64 = screenshot.toString('base64');
+        const screenshot = await page.screenshot({ type: "png" });
+        const screenshotBase64 = screenshot.toString("base64");
 
         callback({
-          type: 'screenshot',
+          type: "screenshot",
           data: { stepId, screenshot: screenshotBase64 },
         });
 
         callback({
-          type: 'step_completed',
+          type: "step_completed",
           data: { step: testStep },
         });
-      } catch (error: any) {
-        testStep.status = 'failed';
-        testStep.error = error.message;
-        executedSteps.push(testStep);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        testStep.status = "failed";
+        testStep.error = errorMessage;
 
         callback({
-          type: 'step_failed',
-          data: { step: testStep, error: error.message },
+          type: "step_failed",
+          data: { step: testStep, error: errorMessage },
         });
 
         // Take screenshot on error
-        const screenshot = await page.screenshot({ type: 'png' });
-        const screenshotBase64 = screenshot.toString('base64');
+        const screenshot = await page.screenshot({ type: "png" });
+        const screenshotBase64 = screenshot.toString("base64");
 
         callback({
-          type: 'screenshot',
+          type: "screenshot",
           data: { stepId, screenshot: screenshotBase64 },
         });
 
@@ -137,13 +147,15 @@ export async function executeTest(
     }
 
     callback({
-      type: 'log',
-      data: { message: '✅ All test steps completed successfully' },
+      type: "log",
+      data: { message: "✅ All test steps completed successfully" },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
     callback({
-      type: 'error',
-      data: { message: error.message, stack: error.stack },
+      type: "error",
+      data: { message: errorMessage, stack: errorStack },
     });
     throw error;
   } finally {
@@ -151,14 +163,6 @@ export async function executeTest(
     if (page) await page.close();
     if (context) await context.close();
     if (browser) await browser.close();
-    if (container) {
-      try {
-        await container.stop();
-        await container.remove();
-      } catch (e) {
-        console.error('Error cleaning up container:', e);
-      }
-    }
   }
 }
 
@@ -167,19 +171,19 @@ export async function executeTest(
  */
 async function executeStep(
   page: Page,
-  stepDef: any,
+  stepDef: StructuredStep,
   testStep: TestStep
 ): Promise<void> {
   const { action, target, value, assertion } = stepDef;
 
   switch (action) {
-    case 'navigate':
-      if (!target) throw new Error('Navigate action requires target URL');
-      await page.goto(target, { waitUntil: 'networkidle' });
+    case "navigate":
+      if (!target) throw new Error("Navigate action requires target URL");
+      await page.goto(target, { waitUntil: "networkidle" });
       break;
 
-    case 'click':
-      if (!target) throw new Error('Click action requires target');
+    case "click":
+      if (!target) throw new Error("Click action requires target");
       await page.click(`text="${target}"`).catch(() => {
         // Try other selectors
         return page.click(target);
@@ -187,44 +191,58 @@ async function executeStep(
       await page.waitForTimeout(500); // Small delay after click
       break;
 
-    case 'fill':
-      if (!target || !value) throw new Error('Fill action requires target and value');
-      await page.fill(`input[type="text"], input[type="email"], input[type="password"], textarea`, value).catch(() => {
-        // Try by label
-        return page.fill(`label:has-text("${target}") + input, [placeholder*="${target}"]`, value);
-      });
+    case "fill":
+      if (!target || !value)
+        throw new Error("Fill action requires target and value");
+      await page
+        .fill(
+          `input[type="text"], input[type="email"], input[type="password"], textarea`,
+          value
+        )
+        .catch(() => {
+          // Try by label
+          return page.fill(
+            `label:has-text("${target}") + input, [placeholder*="${target}"]`,
+            value
+          );
+        });
       break;
 
-    case 'select':
-      if (!target || !value) throw new Error('Select action requires target and value');
+    case "select":
+      if (!target || !value)
+        throw new Error("Select action requires target and value");
       await page.selectOption(target, value);
       break;
 
-    case 'wait':
-      const waitTime = parseInt(value || '1000');
+    case "wait": {
+      const waitTime = Number.parseInt(value || "1000", 10);
       await page.waitForTimeout(waitTime);
       break;
+    }
 
-    case 'assert':
-      if (!assertion) throw new Error('Assert action requires assertion');
+    case "assert":
+      if (!assertion) throw new Error("Assert action requires assertion");
       await performAssertion(page, assertion, testStep);
       break;
 
-    case 'screenshot':
+    case "screenshot":
       // Screenshot is taken automatically after each step
       break;
 
-    case 'scroll':
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+    case "scroll": {
+      await page.evaluate(() => {
+        globalThis.scrollBy(0, globalThis.innerHeight);
+      });
       break;
+    }
 
-    case 'hover':
-      if (!target) throw new Error('Hover action requires target');
+    case "hover":
+      if (!target) throw new Error("Hover action requires target");
       await page.hover(`text="${target}"`).catch(() => page.hover(target));
       break;
 
-    case 'keyboard':
-      if (!value) throw new Error('Keyboard action requires value');
+    case "keyboard":
+      if (!value) throw new Error("Keyboard action requires value");
       await page.keyboard.press(value);
       break;
 
@@ -238,86 +256,112 @@ async function executeStep(
  */
 async function performAssertion(
   page: Page,
-  assertion: any,
+  assertion: StructuredStep["assertion"],
   testStep: TestStep
 ): Promise<void> {
+  if (!assertion) {
+    throw new Error("Assertion is required");
+  }
+
   const { type, expected } = assertion;
 
   switch (type) {
-    case 'text':
-      const textContent = await page.textContent('body');
-      const found = textContent?.includes(expected as string);
+    case "text": {
+      const textContent = await page.textContent("body");
+      const expectedText = String(expected);
+      const found = textContent?.includes(expectedText) ?? false;
       testStep.assertion = {
         ...assertion,
-        actual: textContent,
+        actual: textContent ?? undefined,
         passed: found,
       };
       if (!found) {
-        throw new Error(`Expected text "${expected}" not found`);
+        throw new Error(`Expected text "${expectedText}" not found`);
       }
       break;
+    }
 
-    case 'url':
+    case "url": {
       const url = page.url();
+      const expectedUrl = String(expected);
       testStep.assertion = {
         ...assertion,
         actual: url,
-        passed: url.includes(expected as string),
+        passed: url.includes(expectedUrl),
       };
-      if (!url.includes(expected as string)) {
-        throw new Error(`Expected URL to contain "${expected}", got "${url}"`);
+      if (!url.includes(expectedUrl)) {
+        throw new Error(
+          `Expected URL to contain "${expectedUrl}", got "${url}"`
+        );
       }
       break;
+    }
 
-    case 'title':
+    case "title": {
       const title = await page.title();
+      const expectedTitle = String(expected);
       testStep.assertion = {
         ...assertion,
         actual: title,
-        passed: title.includes(expected as string),
+        passed: title.includes(expectedTitle),
       };
-      if (!title.includes(expected as string)) {
-        throw new Error(`Expected title to contain "${expected}", got "${title}"`);
+      if (!title.includes(expectedTitle)) {
+        throw new Error(
+          `Expected title to contain "${expectedTitle}", got "${title}"`
+        );
       }
       break;
+    }
 
-    case 'element':
-      const element = await page.locator(expected as string).first();
+    case "element": {
+      const expectedSelector = String(expected);
+      const element = await page.locator(expectedSelector).first();
+      // Playwright's isVisible() returns a Promise
+      // eslint-disable-next-line @typescript-eslint/await-thenable
       const isVisible = await element.isVisible();
       testStep.assertion = {
         ...assertion,
-        actual: isVisible ? 'visible' : 'not visible',
+        actual: isVisible ? "visible" : "not visible",
         passed: isVisible,
       };
       if (!isVisible) {
-        throw new Error(`Expected element "${expected}" not found or not visible`);
+        throw new Error(
+          `Expected element "${expectedSelector}" not found or not visible`
+        );
       }
       break;
+    }
 
-    case 'count':
-      const count = await page.locator(expected as string).count();
+    case "count": {
+      const expectedSelector = String(expected);
+      const expectedCount =
+        typeof expected === "number"
+          ? expected
+          : Number.parseInt(String(expected), 10);
+      const count = await page.locator(expectedSelector).count();
       testStep.assertion = {
         ...assertion,
         actual: count,
-        passed: count === expected,
+        passed: count === expectedCount,
       };
-      if (count !== expected) {
-        throw new Error(`Expected ${expected} elements, found ${count}`);
+      if (count !== expectedCount) {
+        throw new Error(`Expected ${expectedCount} elements, found ${count}`);
       }
       break;
+    }
   }
 }
 
 /**
  * Get the appropriate browser engine
  */
-function getBrowserEngine(browserType: 'chromium' | 'firefox' | 'webkit') {
+function getBrowserEngine(browserType: "chromium" | "firefox" | "webkit") {
   switch (browserType) {
-    case 'chromium':
+    case "chromium":
       return chromium;
-    case 'firefox':
+    case "firefox":
       return firefox;
-    case 'webkit':
+    case "webkit":
       return webkit;
     default:
       return chromium;

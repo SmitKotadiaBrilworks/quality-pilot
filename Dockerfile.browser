@@ -1,0 +1,18 @@
+# Dockerfile for isolated browser execution
+FROM mcr.microsoft.com/playwright:v1.40.0-focal
+
+WORKDIR /app
+
+# Install dependencies
+COPY packages/backend/package.json ./
+RUN npm install --production
+
+# Copy executor
+COPY packages/backend/dist/executor ./executor
+COPY packages/shared/dist ./shared
+
+# Expose VNC port (for future VNC streaming)
+EXPOSE 5900
+
+# Run browser in headed mode with VNC
+CMD ["playwright", "install", "chromium", "firefox", "webkit"]

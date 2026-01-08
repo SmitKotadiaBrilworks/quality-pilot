@@ -1,0 +1,19 @@
+{
+  "name": "quality-pilot",
+  "version": "1.0.0",
+  "description": "AI Test Agent Platform - Agent-based UI automation",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "turbo": "^1.10.16",
+    "typescript": "^5.3.3"
+  }
+}

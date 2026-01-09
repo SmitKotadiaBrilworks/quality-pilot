@@ -12,6 +12,7 @@ import {
   StructuredStep,
 } from "../ai/geminiAgent.js";
 import { TestPrompt, TestStep, WSMessageType } from "@quality-pilot/shared";
+import { inspectPage } from "./pageInspector.js";
 
 type ExecutionCallback = (message: {
   type: WSMessageType;
@@ -61,30 +62,7 @@ export async function executeTest(
   });
 
   try {
-    // Step 1: Generate test steps from AI
-    callback({
-      type: "log",
-      data: { message: "🤖 Generating test steps from AI..." },
-    });
-
-    let steps = await generateTestSteps(testPrompt.prompt, testPrompt.url);
-
-    // Inject credentials into steps
-    steps = injectCredentials(steps, testPrompt.credentials);
-
-    callback({
-      type: "log",
-      data: {
-        message: `✅ Generated ${steps.length} test steps`,
-        steps: steps.map((s, i) => ({
-          ...s,
-          id: `step_${i}`,
-          status: "pending",
-        })),
-      },
-    });
-
-    // Step 2: Launch browser (in Docker container for isolation)
+    // Step 1: Launch browser first (in Docker container for isolation)
     const browserType = testPrompt.options?.browser || "chromium";
     const headless = testPrompt.options?.headless !== false;
 
@@ -124,7 +102,61 @@ export async function executeTest(
       execution.page = page;
     }
 
-    // Step 3: Execute each step
+    // Step 2: Initial navigation and page inspection
+    callback({
+      type: "log",
+      data: { message: `🚀 Navigating to ${testPrompt.url}...` },
+    });
+
+    await page.goto(testPrompt.url, {
+      waitUntil: "networkidle",
+      timeout: 60000,
+    });
+    // Wait for JS execution and animations
+    await page.waitForTimeout(3000);
+
+    callback({
+      type: "log",
+      data: { message: "🔍 Inspecting page elements..." },
+    });
+
+    const pageData = await inspectPage(page);
+    const pageElements = {
+      buttons: pageData.buttons.map((b) => b.text),
+      links: pageData.links.map((l) => l.text),
+      inputs: pageData.inputs.map(
+        (i) => i.label || i.placeholder || i.id || "input"
+      ),
+    };
+
+    // Step 3: Generate test steps from AI WITH page elements knowledge
+    callback({
+      type: "log",
+      data: { message: "🤖 Generating optimized test steps from AI..." },
+    });
+
+    let steps = await generateTestSteps(
+      testPrompt.prompt,
+      testPrompt.url,
+      pageElements
+    );
+
+    // Inject credentials into steps
+    steps = injectCredentials(steps, testPrompt.credentials);
+
+    callback({
+      type: "log",
+      data: {
+        message: `✅ Generated ${steps.length} test steps based on page analysis`,
+        steps: steps.map((s, i) => ({
+          ...s,
+          id: `step_${i}`,
+          status: "pending",
+        })),
+      },
+    });
+
+    // Step 4: Execute each step
     // Track context for scoped clicking (e.g., which ebook card we're in)
     let currentContext: string | null = null;
 

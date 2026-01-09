@@ -116,21 +116,21 @@ Example output:
 
   // If page elements are provided, include them in the prompt for better accuracy
   if (pageElements) {
-    userPrompt += `\n\nAvailable elements on the page:\n`;
+    userPrompt += `\n\nCURRENTLY VISIBLE ELEMENTS ON THE PAGE (${url}):\n`;
     if (pageElements.buttons.length > 0) {
       userPrompt += `Buttons: ${pageElements.buttons
-        .slice(0, 20)
+        .slice(0, 30)
         .join(", ")}\n`;
     }
     if (pageElements.links.length > 0) {
-      userPrompt += `Links: ${pageElements.links.slice(0, 20).join(", ")}\n`;
+      userPrompt += `Links: ${pageElements.links.slice(0, 30).join(", ")}\n`;
     }
     if (pageElements.inputs.length > 0) {
       userPrompt += `Input fields: ${pageElements.inputs
-        .slice(0, 20)
+        .slice(0, 30)
         .join(", ")}\n`;
     }
-    userPrompt += `\nIMPORTANT: Use the EXACT text from the available elements listed above.`;
+    userPrompt += `\nCRITICAL: You MUST use the EXACT text from the "Currently visible elements" list above for any interaction steps on this page. If you need to click a button, use its exact text. If you need to fill a form, use the label or placeholder exactly as provided.`;
   }
 
   try {
@@ -155,9 +155,10 @@ Example output:
     }
 
     return steps;
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Error generating test steps:", error);
-    throw new Error(`Failed to generate test steps: ${error.message}`);
+    throw new Error(`Failed to generate test steps: ${errorMessage}`);
   }
 }
 

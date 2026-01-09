@@ -1,40 +1,42 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useRef } from 'react';
-import { TestExecution, TestStep, WSMessage } from '@quality-pilot/shared';
-import { TestRunner } from '@/components/TestRunner';
-import { ExecutionView } from '@/components/ExecutionView';
-import { LogsPanel } from '@/components/LogsPanel';
+import { useState, useEffect, useRef } from "react";
+import { TestExecution, TestStep, WSMessage } from "@quality-pilot/shared";
+import { TestRunner } from "@/components/TestRunner";
+import { ExecutionView } from "@/components/ExecutionView";
+import { LogsPanel } from "@/components/LogsPanel";
 
 export default function Home() {
-  const [testExecution, setTestExecution] = useState<TestExecution | null>(null);
+  const [testExecution, setTestExecution] = useState<TestExecution | null>(
+    null
+  );
   const [logs, setLogs] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     // Connect to WebSocket
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001';
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-      console.log('Connected to WebSocket');
+      console.log("Connected to WebSocket");
     };
 
     ws.onmessage = (event) => {
       try {
         const message: WSMessage = JSON.parse(event.data);
 
-        if (message.type === 'test_started') {
+        if (message.type === "test_started") {
           setTestExecution({
             id: message.testId,
             prompt: message.data.prompt,
-            status: 'running',
+            status: "running",
             steps: [],
             startTime: Date.now(),
             screenshots: [],
           });
           setLogs([`Test started: ${message.data.prompt}`]);
-        } else if (message.type === 'step_started') {
+        } else if (message.type === "step_started") {
           setTestExecution((prev) => {
             if (!prev) return null;
             return {
@@ -42,7 +44,10 @@ export default function Home() {
               steps: [...prev.steps, message.data.step],
             };
           });
-        } else if (message.type === 'step_completed' || message.type === 'step_failed') {
+        } else if (
+          message.type === "step_completed" ||
+          message.type === "step_failed"
+        ) {
           setTestExecution((prev) => {
             if (!prev) return null;
             const updatedSteps = prev.steps.map((step) =>
@@ -53,7 +58,7 @@ export default function Home() {
               steps: updatedSteps,
             };
           });
-        } else if (message.type === 'screenshot') {
+        } else if (message.type === "screenshot") {
           setTestExecution((prev) => {
             if (!prev) return null;
             return {
@@ -61,24 +66,24 @@ export default function Home() {
               screenshots: [...prev.screenshots, message.data.screenshot],
             };
           });
-        } else if (message.type === 'log') {
+        } else if (message.type === "log") {
           setLogs((prev) => [...prev, message.data.message]);
-        } else if (message.type === 'test_completed') {
+        } else if (message.type === "test_completed") {
           setTestExecution((prev) => {
             if (!prev) return null;
             return {
               ...prev,
-              status: 'completed',
+              status: "completed",
               endTime: Date.now(),
             };
           });
-          setLogs((prev) => [...prev, '✅ Test completed']);
-        } else if (message.type === 'test_failed') {
+          setLogs((prev) => [...prev, "✅ Test completed"]);
+        } else if (message.type === "test_failed") {
           setTestExecution((prev) => {
             if (!prev) return null;
             return {
               ...prev,
-              status: 'failed',
+              status: "failed",
               endTime: Date.now(),
               error: message.data.error,
             };
@@ -86,16 +91,16 @@ export default function Home() {
           setLogs((prev) => [...prev, `❌ Test failed: ${message.data.error}`]);
         }
       } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
+        console.error("Error parsing WebSocket message:", error);
       }
     };
 
     ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      console.error("WebSocket error:", error);
     };
 
     ws.onclose = () => {
-      console.log('WebSocket disconnected');
+      console.log("WebSocket disconnected");
     };
 
     wsRef.current = ws;
@@ -105,13 +110,17 @@ export default function Home() {
     };
   }, []);
 
-  const handleTestSubmit = async (prompt: string, url: string, credentials?: Record<string, string>) => {
+  const handleTestSubmit = async (
+    prompt: string,
+    url: string,
+    credentials?: Record<string, string>
+  ) => {
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
       const response = await fetch(`${apiUrl}/api/test/run`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           prompt,
@@ -124,17 +133,38 @@ export default function Home() {
       if (data.success) {
         // Subscribe to test updates
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: 'subscribe',
-            testId: data.testId,
-          }));
+          wsRef.current.send(
+            JSON.stringify({
+              type: "subscribe",
+              testId: data.testId,
+            })
+          );
         }
       } else {
         alert(`Error: ${data.error}`);
       }
     } catch (error) {
-      console.error('Error submitting test:', error);
-      alert('Failed to submit test');
+      console.error("Error submitting test:", error);
+      alert("Failed to submit test");
+    }
+  };
+
+  const handleCancelTest = async (testId: string) => {
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+      const response = await fetch(`${apiUrl}/api/test/cancel/${testId}`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setLogs((prev) => [...prev, "🛑 Test cancellation requested"]);
+      } else {
+        alert(`Error: ${data.message || data.error}`);
+      }
+    } catch (error) {
+      console.error("Error cancelling test:", error);
+      alert("Failed to cancel test");
     }
   };
 
@@ -155,7 +185,10 @@ export default function Home() {
 
           {/* Right: Execution View */}
           <div>
-            <ExecutionView execution={testExecution} />
+            <ExecutionView
+              execution={testExecution}
+              onCancel={handleCancelTest}
+            />
           </div>
         </div>
       </div>

@@ -1,9 +1,15 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { TestAction } from "@quality-pilot/shared";
+import "dotenv/config";
 
-const genAI = new GoogleGenerativeAI(
-  process.env.GEMINI_API_KEY || "AIzaSyBHDd7XcBCDsg0jrWn2WWImbvgKe9Sg6vk"
-);
+const apiKey = process.env.GEMINI_API_KEY;
+console.log("apiKey", apiKey);
+if (!apiKey) {
+  console.error("⚠️  GEMINI_API_KEY is not set in environment variables!");
+  console.error("   Please set it in your .env file or environment");
+}
+
+const genAI = new GoogleGenerativeAI(apiKey || "");
 
 export interface StructuredStep {
   action: TestAction;
@@ -22,7 +28,8 @@ export interface StructuredStep {
  */
 export async function generateTestSteps(
   prompt: string,
-  url: string
+  url: string,
+  pageElements?: { buttons: string[]; links: string[]; inputs: string[] }
   // credentials?: Record<string, string>
 ): Promise<StructuredStep[]> {
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -37,6 +44,39 @@ Rules:
 4. For credentials, use placeholders like {{email}}, {{password}} - DO NOT use actual values
 5. Be specific with targets (use text content, labels, or common selectors)
 6. Include assertions to verify expected outcomes
+7. CRITICAL: For dynamic content or elements that may take time to load:
+   - ALWAYS add a "wait" step (2-3 seconds) after navigation before interacting with elements
+   - If clicking buttons/links, add a "wait" step before the click to ensure element is loaded
+   - Use "scroll" action before clicking if element might be below the fold
+   - For download buttons, forms, or interactive elements, add wait steps before and after
+8. Element detection strategy - CRITICAL RULES (VERY IMPORTANT):
+   - NEVER use href selectors with spaces (e.g., a[href*="download now"] ❌) - URLs never contain spaces
+   - NEVER use CSS pseudo-selectors like :contains(), :has-text() - they don't work in Playwright
+   - ALWAYS use the EXACT visible text that appears on the page (case-sensitive if possible)
+   - For buttons/links: Copy the EXACT text as it appears (including spaces, capitalization, punctuation)
+   - For forms: Use the label text or placeholder text EXACTLY as shown
+   - For inputs: Use placeholder text, label text, or aria-label EXACTLY
+   - DO NOT abbreviate or modify text - use it EXACTLY as displayed
+   - If element has multiple words, include ALL words in the exact order
+   - IMPORTANT: If you see text like " Download" (with leading space) or "Download " (with trailing space), include the space
+   - For buttons inside cards/containers: Use the full button text, not just a keyword
+   - Examples:
+     * If button says "Download Now" → use "Download Now" (not "Download", not "download now")
+     * If button says " Sign Up" (with space) → use " Sign Up" (include the space)
+     * If button says "Get Started" → use "Get Started" (not "Get", not "Started")
+     * If input placeholder is "Enter your email" → use "Enter your email"
+     * If label says "Password" → use "Password"
+   - BAD examples:
+     * "a[href*='download now']", "button:contains('Download')", ":has-text('text')"
+     * "download" when button says "Download Now"
+     * "email" when placeholder says "Enter your email address"
+     * "Sign Up" when button actually says " Sign Up" (missing leading space)
+9. For forms or downloads that require details:
+   - Add "wait" step after page loads
+   - Use "scroll" to ensure form is visible
+   - Fill all required fields before submitting
+   - Add "wait" after filling to allow validation
+10. Always include "assert" steps to verify actions completed successfully
 
 Example output:
 [
@@ -72,7 +112,26 @@ Example output:
   }
 ]`;
 
-  const userPrompt = `URL: ${url}\n\nTest Description: ${prompt}\n\nGenerate test steps:`;
+  let userPrompt = `URL: ${url}\n\nTest Description: ${prompt}\n\nGenerate test steps:`;
+
+  // If page elements are provided, include them in the prompt for better accuracy
+  if (pageElements) {
+    userPrompt += `\n\nAvailable elements on the page:\n`;
+    if (pageElements.buttons.length > 0) {
+      userPrompt += `Buttons: ${pageElements.buttons
+        .slice(0, 20)
+        .join(", ")}\n`;
+    }
+    if (pageElements.links.length > 0) {
+      userPrompt += `Links: ${pageElements.links.slice(0, 20).join(", ")}\n`;
+    }
+    if (pageElements.inputs.length > 0) {
+      userPrompt += `Input fields: ${pageElements.inputs
+        .slice(0, 20)
+        .join(", ")}\n`;
+    }
+    userPrompt += `\nIMPORTANT: Use the EXACT text from the available elements listed above.`;
+  }
 
   try {
     const result = await model.generateContent([systemPrompt, userPrompt]);

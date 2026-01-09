@@ -18,6 +18,28 @@ type ExecutionCallback = (message: {
   data: unknown;
 }) => void;
 
+// Store active test executions for cancellation
+const activeExecutions = new Map<
+  string,
+  {
+    browser: Browser | null;
+    context: BrowserContext | null;
+    page: Page | null;
+    cancelled: boolean;
+  }
+>();
+
+/**
+ * Cancel a running test execution
+ */
+export function cancelTestExecution(testId: string): void {
+  const execution = activeExecutions.get(testId);
+  if (execution) {
+    execution.cancelled = true;
+    console.log(`🛑 Cancellation requested for test ${testId}`);
+  }
+}
+
 /**
  * Main test execution function
  */
@@ -30,6 +52,14 @@ export async function executeTest(
   let context: BrowserContext | null = null;
   let page: Page | null = null;
 
+  // Register this execution for cancellation
+  activeExecutions.set(testId, {
+    browser: null,
+    context: null,
+    page: null,
+    cancelled: false,
+  });
+
   try {
     // Step 1: Generate test steps from AI
     callback({
@@ -37,11 +67,7 @@ export async function executeTest(
       data: { message: "🤖 Generating test steps from AI..." },
     });
 
-    let steps = await generateTestSteps(
-      testPrompt.prompt,
-      testPrompt.url,
-      testPrompt.credentials
-    );
+    let steps = await generateTestSteps(testPrompt.prompt, testPrompt.url);
 
     // Inject credentials into steps
     steps = injectCredentials(steps, testPrompt.credentials);
@@ -67,6 +93,12 @@ export async function executeTest(
       data: { message: `🌐 Launching ${browserType} browser...` },
     });
 
+    // Check if cancelled before starting browser
+    const execution = activeExecutions.get(testId);
+    if (execution?.cancelled) {
+      throw new Error("Test execution was cancelled");
+    }
+
     // For now, launch locally. In production, use Docker containers
     const browserEngine = getBrowserEngine(browserType);
     browser = await browserEngine.launch({
@@ -82,9 +114,31 @@ export async function executeTest(
     });
 
     page = await context.newPage();
+    // Set default timeout for all actions on this page
+    page.setDefaultTimeout(30000);
+
+    // Update execution record
+    if (execution) {
+      execution.browser = browser;
+      execution.context = context;
+      execution.page = page;
+    }
 
     // Step 3: Execute each step
+    // Track context for scoped clicking (e.g., which ebook card we're in)
+    let currentContext: string | null = null;
+
     for (let i = 0; i < steps.length; i++) {
+      // Check for cancellation before each step
+      const execution = activeExecutions.get(testId);
+      if (execution?.cancelled) {
+        callback({
+          type: "log",
+          data: { message: "🛑 Test execution cancelled by user" },
+        });
+        throw new Error("Test execution was cancelled");
+      }
+
       const stepDef = steps[i];
       const stepId = `step_${i}`;
 
@@ -98,14 +152,30 @@ export async function executeTest(
         status: "running",
       };
 
+      // Update context if this step mentions a specific item (e.g., ebook title)
+      if (
+        stepDef.description &&
+        (stepDef.description.includes("ebook") ||
+          stepDef.description.includes("card"))
+      ) {
+        // Try to extract context from description
+        const contextMatch =
+          stepDef.description.match(
+            /(?:ebook|card|item).*?["']([^"']+)["']/i
+          ) || stepDef.description.match(/titled\s+([^,.]+)/i);
+        if (contextMatch) {
+          currentContext = contextMatch[1].trim();
+        }
+      }
+
       callback({
         type: "step_started",
         data: { step: testStep },
       });
 
       try {
-        // Execute the step
-        await executeStep(page, stepDef, testStep);
+        // Execute the step (pass context for scoped operations)
+        await executeStep(page, stepDef, testStep, currentContext || undefined);
 
         testStep.status = "completed";
 
@@ -153,16 +223,31 @@ export async function executeTest(
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
-    callback({
-      type: "error",
-      data: { message: errorMessage, stack: errorStack },
-    });
+
+    // Check if it was a cancellation
+    if (errorMessage.includes("cancelled")) {
+      callback({
+        type: "test_failed",
+        data: {
+          error: "Test execution was cancelled",
+          timestamp: Date.now(),
+        },
+      });
+    } else {
+      callback({
+        type: "error",
+        data: { message: errorMessage, stack: errorStack },
+      });
+    }
     throw error;
   } finally {
     // Cleanup
-    if (page) await page.close();
-    if (context) await context.close();
-    if (browser) await browser.close();
+    if (page) await page.close().catch(() => {});
+    if (context) await context.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
+
+    // Remove from active executions
+    activeExecutions.delete(testId);
   }
 }
 
@@ -172,41 +257,539 @@ export async function executeTest(
 async function executeStep(
   page: Page,
   stepDef: StructuredStep,
-  testStep: TestStep
+  testStep: TestStep,
+  context?: string | null
 ): Promise<void> {
   const { action, target, value, assertion } = stepDef;
 
   switch (action) {
-    case "navigate":
+    case "navigate": {
       if (!target) throw new Error("Navigate action requires target URL");
-      await page.goto(target, { waitUntil: "networkidle" });
-      break;
-
-    case "click":
-      if (!target) throw new Error("Click action requires target");
-      await page.click(`text="${target}"`).catch(() => {
-        // Try other selectors
-        return page.click(target);
+      await page.goto(target, {
+        waitUntil: "networkidle",
+        timeout: 60000, // Increased timeout for slow pages
       });
-      await page.waitForTimeout(500); // Small delay after click
+      // Wait a bit more for dynamic content to load
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForTimeout(2000); // Give time for JavaScript to render
       break;
+    }
 
-    case "fill":
+    case "click": {
+      if (!target) throw new Error("Click action requires target");
+
+      // Clean the target - remove leading/trailing whitespace and normalize
+      const cleanTarget = target.trim();
+
+      // Reject invalid selectors that AI might generate
+      if (
+        cleanTarget.includes(":contains") ||
+        cleanTarget.includes(":has-text") ||
+        (cleanTarget.includes("href") &&
+          cleanTarget.includes('"') &&
+          cleanTarget.match(/href.*["'][^"']* [^"']*["']/))
+      ) {
+        throw new Error(
+          `Invalid selector generated: "${target}". Use plain text instead (e.g., "Download Now")`
+        );
+      }
+
+      // Wait for page to be ready
+      await page
+        .waitForLoadState("networkidle", { timeout: 10000 })
+        .catch(() => {
+          // Ignore timeout, continue anyway
+        });
+
+      // Wait a bit more for dynamic content (especially for cards/modals)
+      await page.waitForTimeout(3000);
+
+      // Debug: Get all available clickable elements on the page
+      const availableElements: Array<{
+        text: string;
+        tag: string;
+        visible: boolean;
+      }> = [];
+      try {
+        const allClickable = await page
+          .locator(
+            'button, a, [role="button"], input[type="button"], input[type="submit"], [onclick], [class*="button"], [class*="btn"]'
+          )
+          .all();
+        for (const elem of allClickable.slice(0, 30)) {
+          try {
+            const text = await elem.textContent().catch(() => null);
+            const tagName = await elem
+              .evaluate((el) => el.tagName.toLowerCase())
+              .catch(() => "unknown");
+            const isVisible = await elem.isVisible().catch(() => false);
+            if (text && text.trim()) {
+              availableElements.push({
+                text: text.trim(),
+                tag: tagName,
+                visible: isVisible,
+              });
+            }
+          } catch (e) {
+            // Skip this element
+          }
+        }
+        console.log(
+          `🔍 Found ${availableElements.length} clickable elements on page`
+        );
+        if (availableElements.length > 0) {
+          console.log(
+            `📋 Available elements:`,
+            availableElements
+              .map(
+                (e: { text: string; tag: string; visible: boolean }) =>
+                  `[${e.tag}] "${e.text}" (visible: ${e.visible})`
+              )
+              .join(", ")
+          );
+        }
+      } catch (e) {
+        console.log("⚠️ Could not inspect page elements:", e);
+      }
+
+      // Try multiple selector strategies with increased timeout
+      const strategies = [
+        // Strategy 1: getByRole with name (most reliable for buttons/links)
+        async () => {
+          const locator = page
+            .getByRole("button", { name: cleanTarget, exact: false })
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 2: getByRole for link
+        async () => {
+          const locator = page
+            .getByRole("link", { name: cleanTarget, exact: false })
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 3: getByText with exact match (most reliable for visible text)
+        async () => {
+          const locator = page.getByText(cleanTarget, { exact: true }).first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 4: getByText with case-insensitive exact match
+        async () => {
+          const escaped = cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const locator = page
+            .getByText(new RegExp(`^${escaped}$`, "i"))
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 5: getByText with partial match (if exact doesn't work)
+        async () => {
+          const locator = page.getByText(cleanTarget, { exact: false }).first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 6: Find by text content that contains target (more flexible)
+        async () => {
+          const allElements = await page
+            .locator('button, a, [role="button"], [onclick]')
+            .all();
+          for (const elem of allElements) {
+            const text = await elem.textContent().catch(() => null);
+            if (
+              text &&
+              text.trim().toLowerCase().includes(cleanTarget.toLowerCase())
+            ) {
+              await elem
+                .scrollIntoViewIfNeeded({ timeout: 5000 })
+                .catch(() => {});
+              await elem.click({ timeout: 30000 });
+              return;
+            }
+          }
+          throw new Error("Element not found by text content");
+        },
+        // Strategy 7: Scoped clicking - if context is available, scope to parent container
+        async () => {
+          if (context) {
+            // Find the parent element (e.g., ebook card) that contains the context text
+            const contextLocator = page
+              .getByText(context, { exact: false })
+              .first();
+            const isContextVisible = await contextLocator
+              .isVisible()
+              .catch(() => false);
+
+            if (isContextVisible) {
+              // Find the nearest common ancestor (card/container)
+              // Then find the target button/link within that container
+              const parentContainer = contextLocator
+                .locator("..")
+                .locator("..")
+                .first();
+              const scopedTarget = parentContainer
+                .getByText(cleanTarget, { exact: false })
+                .first();
+
+              await scopedTarget
+                .scrollIntoViewIfNeeded({ timeout: 5000 })
+                .catch(() => {});
+              await scopedTarget.click({ timeout: 30000 });
+              return;
+            }
+          }
+          throw new Error("Context not available");
+        },
+        // Strategy 8: Exact text match with locator
+        async () => {
+          const locator = page.locator(`text="${cleanTarget}"`).first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 6: Text with leading/trailing whitespace tolerance
+        async () => {
+          const locator = page
+            .locator(
+              `text=/^\\s*${cleanTarget.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
+              )}\\s*$/i`
+            )
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 4: Contains text (partial match)
+        async () => {
+          const locator = page.locator(`text=${cleanTarget}`).first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 5: getByText (Playwright's recommended method) - handles whitespace better
+        async () => {
+          const locator = page.getByText(cleanTarget, { exact: false }).first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 6: Button with text (has-text)
+        async () => {
+          const locator = page
+            .locator(`button:has-text("${cleanTarget}")`)
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 7: Link with text (has-text)
+        async () => {
+          const locator = page.locator(`a:has-text("${cleanTarget}")`).first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 8: Role-based button with regex (case-insensitive)
+        async () => {
+          const locator = page
+            .getByRole("button", {
+              name: new RegExp(
+                cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                "i"
+              ),
+            })
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 9: Role-based link with regex (case-insensitive)
+        async () => {
+          const locator = page
+            .getByRole("link", {
+              name: new RegExp(
+                cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                "i"
+              ),
+            })
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 10: CSS selector if target looks like one (but not pseudo-selectors)
+        async () => {
+          // Only try if it looks like a valid CSS selector (not containing :contains, :has-text, etc.)
+          if (
+            !target.includes(":contains") &&
+            !target.includes(":has-text") &&
+            (target.startsWith(".") ||
+              target.startsWith("#") ||
+              target.startsWith("[") ||
+              target.includes(" ") ||
+              target.includes(">") ||
+              target.includes("+") ||
+              target.includes("~"))
+          ) {
+            const locator = page.locator(target).first();
+            await locator
+              .scrollIntoViewIfNeeded({ timeout: 5000 })
+              .catch(() => {});
+            await locator.click({ timeout: 30000 });
+          } else {
+            throw new Error("Invalid selector");
+          }
+        },
+        // Strategy 11: Find by class containing target text
+        async () => {
+          const locator = page
+            .locator(`[class*="${cleanTarget.toLowerCase()}"]`)
+            .first();
+          await locator
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => {});
+          await locator.click({ timeout: 30000 });
+        },
+        // Strategy 12: Find by href containing target text (only if no spaces in target)
+        async () => {
+          // Only try href matching if target has no spaces (URLs don't have spaces)
+          if (!cleanTarget.includes(" ")) {
+            const locator = page
+              .locator(`a[href*="${cleanTarget.toLowerCase()}"]`)
+              .first();
+            await locator
+              .scrollIntoViewIfNeeded({ timeout: 5000 })
+              .catch(() => {});
+            await locator.click({ timeout: 30000 });
+          } else {
+            throw new Error("Skipping href strategy - target contains spaces");
+          }
+        },
+      ];
+
+      let lastError: Error | null = null;
+      for (const strategy of strategies) {
+        try {
+          await strategy();
+          await page.waitForTimeout(500); // Small delay after click
+          return; // Success, exit
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          continue; // Try next strategy
+        }
+      }
+
+      // If all strategies failed, provide helpful error with available elements
+      const availableTexts = availableElements
+        .filter(
+          (e: { text: string; tag: string; visible: boolean }) => e.visible
+        )
+        .map(
+          (e: { text: string; tag: string; visible: boolean }) => `"${e.text}"`
+        )
+        .slice(0, 10)
+        .join(", ");
+
+      throw new Error(
+        `Failed to click "${target}" after trying multiple strategies: ${
+          lastError?.message || "Unknown error"
+        }. Available visible elements: ${availableTexts || "none found"}`
+      );
+    }
+
+    case "fill": {
       if (!target || !value)
         throw new Error("Fill action requires target and value");
-      await page
-        .fill(
-          `input[type="text"], input[type="email"], input[type="password"], textarea`,
-          value
+
+      // Debug: Get all available input fields
+      const availableInputs: Array<{
+        placeholder?: string;
+        label?: string;
+        type?: string;
+        id?: string;
+      }> = [];
+      try {
+        const allInputs = await page.locator("input, textarea").all();
+        for (const inp of allInputs.slice(0, 20)) {
+          try {
+            const placeholder = await inp
+              .getAttribute("placeholder")
+              .catch(() => null);
+            const inputType = await inp.getAttribute("type").catch(() => null);
+            const inputId = await inp.getAttribute("id").catch(() => null);
+            const label = inputId
+              ? await page
+                  .locator(`label[for="${inputId}"]`)
+                  .textContent()
+                  .catch(() => null)
+              : null;
+            availableInputs.push({
+              placeholder: placeholder || undefined,
+              label: label?.trim() || undefined,
+              type: inputType || undefined,
+              id: inputId || undefined,
+            });
+          } catch (e) {
+            // Skip
+          }
+        }
+        console.log(
+          `🔍 Found ${availableInputs.length} input fields:`,
+          availableInputs
+        );
+      } catch (e) {
+        console.log("⚠️ Could not inspect input fields:", e);
+      }
+
+      // Try multiple strategies to find the input field
+      const fillStrategies = [
+        // Strategy 1: Find by placeholder text (exact match)
+        async () => {
+          const locator = page
+            .getByPlaceholder(target, { exact: true })
+            .first();
+          await locator.fill(value, { timeout: 30000 });
+        },
+        // Strategy 2: Find by placeholder text (partial match)
+        async () => {
+          const locator = page
+            .getByPlaceholder(target, { exact: false })
+            .first();
+          await locator.fill(value, { timeout: 30000 });
+        },
+        // Strategy 2b: Find by placeholder containing target words
+        async () => {
+          const targetWords = target
+            .toLowerCase()
+            .split(/\s+/)
+            .filter((w) => w.length > 2);
+          const allInputs = await page.locator("input, textarea").all();
+          for (const inp of allInputs) {
+            try {
+              const placeholder = await inp
+                .getAttribute("placeholder")
+                .catch(() => null);
+              if (
+                placeholder &&
+                targetWords.every((word) =>
+                  placeholder.toLowerCase().includes(word)
+                )
+              ) {
+                await inp.fill(value, { timeout: 30000 });
+                return;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+          throw new Error("Input not found by placeholder words");
+        },
+        // Strategy 3: Find by label text, then find associated input
+        async () => {
+          const label = page.getByText(target, { exact: false }).first();
+          const labelFor = await label.getAttribute("for").catch(() => null);
+          if (labelFor) {
+            await page.locator(`#${labelFor}`).fill(value, { timeout: 30000 });
+          } else {
+            // Find input next to label
+            const input = label
+              .locator("..")
+              .locator("input, textarea")
+              .first();
+            await input.fill(value, { timeout: 30000 });
+          }
+        },
+        // Strategy 4: Find by label text using getByLabel
+        async () => {
+          const locator = page.getByLabel(target, { exact: false }).first();
+          await locator.fill(value, { timeout: 30000 });
+        },
+        // Strategy 5: Find by role and name
+        async () => {
+          const locator = page
+            .getByRole("textbox", { name: new RegExp(target, "i") })
+            .first();
+          await locator.fill(value, { timeout: 30000 });
+        },
+        // Strategy 6: Generic input selector with placeholder
+        async () => {
+          const locator = page
+            .locator(
+              `input[placeholder*="${target}"], textarea[placeholder*="${target}"]`
+            )
+            .first();
+          await locator.fill(value, { timeout: 30000 });
+        },
+        // Strategy 7: Fallback to any visible input
+        async () => {
+          const locator = page
+            .locator(
+              'input[type="text"], input[type="email"], input[type="password"], textarea'
+            )
+            .first();
+          await locator.fill(value, { timeout: 30000 });
+        },
+      ];
+
+      let lastError: Error | null = null;
+      for (const strategy of fillStrategies) {
+        try {
+          await strategy();
+          return; // Success
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          continue;
+        }
+      }
+
+      // Provide helpful error with available inputs
+      const availableInfo = availableInputs
+        .slice(0, 5)
+        .map(
+          (inp: {
+            placeholder?: string;
+            label?: string;
+            type?: string;
+            id?: string;
+          }) => {
+            const parts: string[] = [];
+            if (inp.placeholder)
+              parts.push(`placeholder: "${inp.placeholder}"`);
+            if (inp.label) parts.push(`label: "${inp.label}"`);
+            if (inp.type) parts.push(`type: ${inp.type}`);
+            return parts.join(", ");
+          }
         )
-        .catch(() => {
-          // Try by label
-          return page.fill(
-            `label:has-text("${target}") + input, [placeholder*="${target}"]`,
-            value
-          );
-        });
-      break;
+        .join("; ");
+
+      throw new Error(
+        `Failed to fill "${target}" after trying multiple strategies: ${
+          lastError?.message || "Unknown error"
+        }. Available inputs: ${availableInfo || "none found"}`
+      );
+    }
 
     case "select":
       if (!target || !value)
@@ -230,9 +813,23 @@ async function executeStep(
       break;
 
     case "scroll": {
-      await page.evaluate(() => {
-        globalThis.scrollBy(0, globalThis.innerHeight);
-      });
+      // Scroll down by viewport height, or scroll to specific element if target provided
+      if (target) {
+        try {
+          const element = await page.locator(target).first();
+          await element.scrollIntoViewIfNeeded({ timeout: 5000 });
+        } catch {
+          // If element not found, just scroll down
+          await page.evaluate(() => {
+            globalThis.scrollBy(0, globalThis.innerHeight);
+          });
+        }
+      } else {
+        await page.evaluate(() => {
+          globalThis.scrollBy(0, globalThis.innerHeight);
+        });
+      }
+      await page.waitForTimeout(500); // Wait for scroll to complete
       break;
     }
 

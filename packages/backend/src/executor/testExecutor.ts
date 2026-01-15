@@ -10,7 +10,7 @@ import {
   generateTestSteps,
   injectCredentials,
   StructuredStep,
-} from "../ai/geminiAgent.js";
+} from "../ai/geminiAgent";
 import { TestPrompt, TestStep, WSMessageType } from "@quality-pilot/shared";
 import { inspectPage } from "./pageInspector.js";
 
@@ -125,7 +125,7 @@ export async function executeTest(
       buttons: pageData.buttons.map((b) => b.text),
       links: pageData.links.map((l) => l.text),
       inputs: pageData.inputs.map(
-        (i) => i.label || i.placeholder || i.id || "input"
+        (i) => i.label || i.placeholder || i.type || i.id || "input"
       ),
     };
 
@@ -148,7 +148,7 @@ export async function executeTest(
       type: "log",
       data: {
         message: `✅ Generated ${steps.length} test steps based on page analysis`,
-        steps: steps.map((s, i) => ({
+        steps: steps.map((s: any, i: any) => ({
           ...s,
           id: `step_${i}`,
           status: "pending",
@@ -697,6 +697,16 @@ async function executeStep(
 
       // Try multiple strategies to find the input field
       const fillStrategies = [
+        // Strategy 0: Special handling for password fields
+        async () => {
+          if (target.toLowerCase().includes("password")) {
+            // Priority check for explicit type="password"
+            const locator = page.locator('input[type="password"]').first();
+            await locator.fill(value, { timeout: 30000 });
+          } else {
+            throw new Error("Not a password target");
+          }
+        },
         // Strategy 1: Find by placeholder text (exact match)
         async () => {
           const locator = page

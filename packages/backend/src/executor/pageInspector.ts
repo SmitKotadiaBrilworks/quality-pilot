@@ -52,7 +52,7 @@ export async function inspectPage(page: Page): Promise<{
       )
       .all();
 
-    for (const btn of buttons.slice(0, 50)) {
+    for (const btn of buttons.slice(0, 100)) {
       try {
         const isVisible = await btn.isVisible().catch(() => false);
         if (!isVisible) continue;
@@ -81,7 +81,7 @@ export async function inspectPage(page: Page): Promise<{
 
     // Get all links
     const links = await page.locator("a").all();
-    for (const link of links.slice(0, 50)) {
+    for (const link of links.slice(0, 100)) {
       try {
         const isVisible = await link.isVisible().catch(() => false);
         if (!isVisible) continue;
@@ -106,7 +106,7 @@ export async function inspectPage(page: Page): Promise<{
 
     // Get all inputs
     const inputs = await page.locator("input, textarea, select").all();
-    for (const inp of inputs.slice(0, 50)) {
+    for (const inp of inputs.slice(0, 100)) {
       try {
         const isVisible = await inp.isVisible().catch(() => false);
         if (!isVisible) continue;
@@ -126,6 +126,15 @@ export async function inspectPage(page: Page): Promise<{
             .catch(() => null);
         }
 
+        // Try parent label (if input is inside label)
+        if (!label) {
+          label = await inp
+            .locator("xpath=ancestor::label")
+            .first()
+            .innerText()
+            .catch(() => null);
+        }
+
         if (!label) {
           // Try to find label by aria-label or title
           label = await inp.getAttribute("aria-label").catch(() => null);
@@ -134,9 +143,45 @@ export async function inspectPage(page: Page): Promise<{
           }
         }
 
+        // As a last fallback, look for text in previous sibling or nearby element
+        if (!label) {
+          const previousText = await inp
+            .evaluate((el) => {
+              // Look for previous sibling that is a label or has text
+              let prev: Element | null = el.previousElementSibling;
+              while (prev) {
+                if (
+                  prev.tagName === "LABEL" ||
+                  (prev as HTMLElement).innerText?.trim()
+                ) {
+                  return (prev as HTMLElement).innerText;
+                }
+                prev = prev.previousElementSibling;
+              }
+              // Or look at parent's previous sibling
+              if (el.parentElement) {
+                const parentPrev = el.parentElement.previousElementSibling;
+                if (
+                  parentPrev &&
+                  (parentPrev as HTMLElement).innerText?.trim()
+                ) {
+                  return (parentPrev as HTMLElement).innerText;
+                }
+              }
+              return null;
+            })
+            .catch(() => null);
+
+          if (previousText) label = previousText;
+        }
+
+        // Fallback label to placeholder or type if still empty
+        const finalLabel =
+          label?.trim() || placeholder || inputType || undefined;
+
         result.inputs.push({
           placeholder: placeholder || undefined,
-          label: label?.trim() || undefined,
+          label: finalLabel,
           type: inputType || undefined,
           id: inputId || undefined,
           visible: isVisible,

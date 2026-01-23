@@ -2,8 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { TestAction } from "@quality-pilot/shared";
 import "dotenv/config";
 
-const apiKey =
-  process.env.GEMINI_API_KEY;
+const apiKey = process.env.GEMINI_API_KEY;
 console.log("apiKey", apiKey);
 if (!apiKey) {
   console.error("⚠️  GEMINI_API_KEY is not set in environment variables!");

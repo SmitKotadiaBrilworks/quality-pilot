@@ -32,7 +32,7 @@ export async function generateTestSteps(
   pageElements?: { buttons: string[]; links: string[]; inputs: string[] }
   // credentials?: Record<string, string>
 ): Promise<StructuredStep[]> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
   // Build the prompt for Gemini
   const systemPrompt = `You are a test automation expert. Convert the user's natural language test description into structured test steps.
@@ -45,8 +45,8 @@ Rules:
 5. Be specific with targets (use text content, labels, or common selectors)
 6. Include assertions to verify expected outcomes
 7. CRITICAL: For dynamic content or elements that may take time to load:
-   - ALWAYS add a "wait" step (2-3 seconds) after navigation before interacting with elements
-   - If clicking buttons/links, add a "wait" step before the click to ensure element is loaded
+   - ALWAYS add a "wait" step (2000-5000ms) after navigation before interacting with elements
+   - If clicking buttons/links that cause navigation (like Login), add a "wait" step (5000ms) AFTER the click
    - Use "scroll" action before clicking if element might be below the fold
    - For download buttons, forms, or interactive elements, add wait steps before and after
 8. Element detection strategy - CRITICAL RULES (VERY IMPORTANT):
@@ -59,24 +59,17 @@ Rules:
    - DO NOT abbreviate or modify text - use it EXACTLY as displayed
    - If element has multiple words, include ALL words in the exact order
    - IMPORTANT: If you see text like " Download" (with leading space) or "Download " (with trailing space), include the space
-   - For buttons inside cards/containers: Use the full button text, not just a keyword
-   - Examples:
-     * If button says "Download Now" → use "Download Now" (not "Download", not "download now")
-     * If button says " Sign Up" (with space) → use " Sign Up" (include the space)
-     * If button says "Get Started" → use "Get Started" (not "Get", not "Started")
-     * If input placeholder is "Enter your email" → use "Enter your email"
-     * If label says "Password" → use "Password"
-   - BAD examples:
-     * "a[href*='download now']", "button:contains('Download')", ":has-text('text')"
-     * "download" when button says "Download Now"
-     * "email" when placeholder says "Enter your email address"
-     * "Sign Up" when button actually says " Sign Up" (missing leading space)
 9. For forms or downloads that require details:
    - Add "wait" step after page loads
-   - Use "scroll" to ensure form is visible
    - Fill all required fields before submitting
-   - Add "wait" after filling to allow validation
-10. Always include "assert" steps to verify actions completed successfully
+10. Assertions & Future States (CRITICAL):
+    - You ONLY know the elements on the INITIAL page. You DO NOT know what text appears on the next page (e.g. after login).
+    - DO NOT hallucinate text like "Dashboard", "Welcome", "Success" unless the user explicitly told you to check for it.
+    - FOR POST-LOGIN/NAVIGATION ASSERTIONS:
+      - Prefer asserting the URL changed (e.g. type: "url", expected: "login", passed: false -> meaning url does not contain login)
+      - Or assert type: "url", expected: "/dashboard" (if you can guess the path)
+      - ONLY use text assertion if you are 100% sure the text exists (e.g. user said "Check for 'Dashboard' text").
+      - If unsure, use { "action": "wait", "value": "3000" } as a safety buffer instead of a strict text assertion.
 
 Example output:
 [
@@ -103,11 +96,16 @@ Example output:
     "target": "Login"
   },
   {
+    "action": "wait",
+    "description": "Wait for login to complete",
+    "value": "5000"
+  },
+  {
     "action": "assert",
-    "description": "Verify successful login",
+    "description": "Verify we moved away from login page",
     "assertion": {
-      "type": "text",
-      "expected": "Dashboard"
+      "type": "url",
+      "expected": "login"
     }
   }
 ]`;

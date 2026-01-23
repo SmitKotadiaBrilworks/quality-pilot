@@ -32,7 +32,7 @@ export async function inspectPage(page: Page): Promise<{
     // We use a more comprehensive selector for buttons
     const buttons = await page
       .locator(
-        'button, [role="button"], input[type="button"], input[type="submit"], [class*="button"], [class*="btn"], [onclick]'
+        'button, [role="button"], input[type="button"], input[type="submit"], [class*="button"], [class*="btn"], [onclick]',
       )
       .all();
 
@@ -180,10 +180,10 @@ export async function inspectPage(page: Page): Promise<{
 
   // Remove duplicates
   result.buttons = result.buttons.filter(
-    (v, i, a) => a.findIndex((t) => t.text === v.text) === i
+    (v, i, a) => a.findIndex((t) => t.text === v.text) === i,
   );
   result.links = result.links.filter(
-    (v, i, a) => a.findIndex((t) => t.text === v.text) === i
+    (v, i, a) => a.findIndex((t) => t.text === v.text) === i,
   );
 
   return result;

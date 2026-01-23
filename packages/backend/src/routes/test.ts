@@ -2,6 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { testQueue } from "../queue/queue.js";
 import { TestPrompt } from "@quality-pilot/shared";
+import { closeBrowserSession, closeAllBrowserSessions } from "../executor/testExecutor.js";
+
 
 const router = Router();
 
@@ -23,6 +25,7 @@ const testPromptSchema = z.object({
         .optional(),
     })
     .optional(),
+    keepSessionAlive: z.boolean().optional(),
 });
 
 router.post("/run", async (req, res) => {
@@ -146,6 +149,40 @@ router.post("/cancel/:testId", async (req, res) => {
     res.status(500).json({
       success: false,
       error: `Failed to cancel test: ${errorMessage}`,
+    });
+  }
+});
+// Close specific browser session
+router.post("/session/close/:sessionId", async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    await closeBrowserSession(sessionId);
+    res.json({
+      success: true,
+      message: `Session ${sessionId} closed`,
+    });
+  } catch (error) {
+    console.error("Error closing session:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to close session",
+    });
+  }
+});
+
+// Close all browser sessions
+router.post("/session/close-all", async (req, res) => {
+  try {
+    await closeAllBrowserSessions();
+    res.json({
+      success: true,
+      message: "All browser sessions closed",
+    });
+  } catch (error) {
+    console.error("Error closing all sessions:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to close all sessions",
     });
   }
 });

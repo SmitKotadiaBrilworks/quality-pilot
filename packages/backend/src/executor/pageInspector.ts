@@ -14,6 +14,14 @@ export async function inspectPage(page: Page): Promise<{
     id?: string;
     visible: boolean;
   }>;
+  pageContext: {
+    url: string;
+    title: string;
+    headings: string[];
+    visibleText: string;
+    forms: Array<{ labels: string[]; fields: string[] }>;
+    messages: string[];
+  };
 }> {
   const result = {
     buttons: [] as Array<{ text: string; visible: boolean; tag: string }>,
@@ -25,6 +33,14 @@ export async function inspectPage(page: Page): Promise<{
       id?: string;
       visible: boolean;
     }>,
+    pageContext: {
+      url: "",
+      title: "",
+      headings: [] as string[],
+      visibleText: "",
+      forms: [] as Array<{ labels: string[]; fields: string[] }>,
+      messages: [] as string[],
+    },
   };
 
   try {
@@ -129,6 +145,112 @@ export async function inspectPage(page: Page): Promise<{
         // Skip
       }
     }
+    // Get page context - URL, title, headings, visible text
+    try {
+      result.pageContext.url = page.url();
+      result.pageContext.title = await page.title().catch(() => "");
+
+      // Get all headings (h1-h6)
+      const headings = await page.locator("h1, h2, h3, h4, h5, h6").all();
+      for (const heading of headings.slice(0, 20)) {
+        try {
+          const text = await heading.innerText().catch(() => null);
+          if (text && text.trim()) {
+            result.pageContext.headings.push(text.trim());
+          }
+        } catch (e) {
+          // Skip
+        }
+      }
+
+      // Get visible text from main content areas (body, main, article, section)
+      const bodyText = await page
+        .locator("body")
+        .first()
+        .evaluate((el) => {
+          // Get text but exclude script and style tags
+          const clone = el.cloneNode(true) as HTMLElement;
+          const scripts = clone.querySelectorAll("script, style, noscript");
+          scripts.forEach((s) => s.remove());
+          return clone.innerText;
+        })
+        .catch(() => "");
+
+      // Limit visible text to ~2000 characters for AI context
+      result.pageContext.visibleText = bodyText
+        .substring(0, 2000)
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // Detect forms and their fields
+      const forms = await page.locator("form").all();
+      for (const form of forms.slice(0, 5)) {
+        try {
+          const labels = await form.locator("label").all();
+          const formLabels: string[] = [];
+          for (const label of labels.slice(0, 10)) {
+            const text = await label.innerText().catch(() => null);
+            if (text && text.trim()) {
+              formLabels.push(text.trim());
+            }
+          }
+
+          const fields = await form.locator("input, textarea, select").all();
+          const formFields: string[] = [];
+          for (const field of fields.slice(0, 10)) {
+            const placeholder = await field
+              .getAttribute("placeholder")
+              .catch(() => null);
+            const name = await field.getAttribute("name").catch(() => null);
+            if (placeholder) formFields.push(placeholder);
+            else if (name) formFields.push(name);
+          }
+
+          if (formLabels.length > 0 || formFields.length > 0) {
+            result.pageContext.forms.push({
+              labels: formLabels,
+              fields: formFields,
+            });
+          }
+        } catch (e) {
+          // Skip
+        }
+      }
+
+      // Detect messages (success, error, warning, info)
+      const messageSelectors = [
+        '[role="alert"]',
+        ".alert",
+        ".error",
+        ".success",
+        ".warning",
+        ".message",
+        ".notification",
+        ".toast",
+        '[class*="error"]',
+        '[class*="success"]',
+        '[class*="message"]',
+      ];
+
+      for (const selector of messageSelectors) {
+        try {
+          const messages = await page.locator(selector).all();
+          for (const msg of messages.slice(0, 5)) {
+            const isVisible = await msg.isVisible().catch(() => false);
+            if (isVisible) {
+              const text = await msg.innerText().catch(() => null);
+              if (text && text.trim()) {
+                result.pageContext.messages.push(text.trim());
+              }
+            }
+          }
+        } catch (e) {
+          // Skip
+        }
+      }
+    } catch (error) {
+      console.error("Error getting page context:", error);
+    }
   } catch (error) {
     console.error("Error inspecting page:", error);
   }
@@ -140,6 +262,10 @@ export async function inspectPage(page: Page): Promise<{
   result.links = result.links.filter(
     (v, i, a) => a.findIndex((t) => t.text === v.text) === i
   );
+  result.pageContext.headings = Array.from(
+    new Set(result.pageContext.headings)
+  );
+  result.pageContext.messages = Array.from(new Set(result.pageContext.messages));
 
   return result;
 }

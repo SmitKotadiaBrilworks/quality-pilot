@@ -8,13 +8,14 @@ export interface TestPrompt {
 }
 
 export interface TestOptions {
-  browser?: 'chromium' | 'firefox' | 'webkit';
+  browser?: "chromium" | "firefox" | "webkit";
   headless?: boolean;
   timeout?: number;
   viewport?: {
     width: number;
     height: number;
   };
+  keepSessionAlive?: boolean; // Keep browser session alive between tests (maintains cookies/login)
 }
 
 // AI-generated test steps
@@ -31,21 +32,26 @@ export interface TestStep {
 }
 
 export type TestAction =
-  | 'navigate'
-  | 'click'
-  | 'fill'
-  | 'select'
-  | 'wait'
-  | 'assert'
-  | 'screenshot'
-  | 'scroll'
-  | 'hover'
-  | 'keyboard';
+  | "navigate"
+  | "click"
+  | "fill"
+  | "select"
+  | "wait"
+  | "assert"
+  | "screenshot"
+  | "scroll"
+  | "hover"
+  | "keyboard";
 
-export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped";
 
 export interface Assertion {
-  type: 'text' | 'element' | 'url' | 'title' | 'count';
+  type: "text" | "element" | "url" | "title" | "count";
   expected: string | number;
   actual?: string | number;
   passed?: boolean;
@@ -64,7 +70,12 @@ export interface TestExecution {
   video?: string;
 }
 
-export type ExecutionStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type ExecutionStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 // WebSocket messages
 export interface WSMessage {
@@ -74,15 +85,15 @@ export interface WSMessage {
 }
 
 export type WSMessageType =
-  | 'test_started'
-  | 'step_started'
-  | 'step_completed'
-  | 'step_failed'
-  | 'test_completed'
-  | 'test_failed'
-  | 'log'
-  | 'screenshot'
-  | 'error';
+  | "test_started"
+  | "step_started"
+  | "step_completed"
+  | "step_failed"
+  | "test_completed"
+  | "test_failed"
+  | "log"
+  | "screenshot"
+  | "error";
 
 // Credential management
 export interface Credential {
